@@ -12,14 +12,15 @@ import os
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
+    parser.add_argument("--local_rank", type=int, default=-1)
     parser = deepspeed.add_config_arguments(parser)
     args = parser.parse_args()
 
     print(json.dumps(args.config, indent=4))
-    print(json.dumps(args.deepspeed, indent=4))
+    print(json.dumps(getattr(args, "deepspeed_config", None), indent=4))
 
     deepspeed.init_distributed()
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    local_rank = args.local_rank if args.local_rank >= 0 else int(os.environ.get("LOCAL_RANK", 0))
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     rank = int(os.environ.get("RANK", 0))
     

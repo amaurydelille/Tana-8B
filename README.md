@@ -19,5 +19,5 @@ python main.py --config <your_config_file.json>
 
 Tana also supports DeepSpeed for distributed training. To use DeepSpeed, you can run the following command:
 ```bash
-deepspeed main.py --config training_config.json --deepspeed ds_config.json
+deepspeed main.py --config training_config.json --deepspeed_config ds_config.json
 ```
