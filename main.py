@@ -12,7 +12,6 @@ import os
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
-    parser.add_argument("--deepspeed", type=str, required=False)
     parser = deepspeed.add_config_arguments(parser)
     args = parser.parse_args()
 
