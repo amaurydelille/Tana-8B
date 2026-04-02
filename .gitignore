@@ -1,3 +1,4 @@
 .env
 *.safetensors
 __pycache__/
+training_config.json

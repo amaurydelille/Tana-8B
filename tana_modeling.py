@@ -113,6 +113,7 @@ class MultiHeadSelfAttention(nn.Module):
         torch.nn.init.xavier_normal_(self.out_proj)
 
     def forward(self, x: torch.Tensor, mask: bool = True) -> torch.Tensor:
+        x = x.to(self.q_proj.dtype)
         B, N, D = x.shape
         q = (x @ self.q_proj).view(B, N, self.n_heads, self.d_head).transpose(1, 2)
         k = (x @ self.k_proj).view(B, N, self.n_heads, self.d_head).transpose(1, 2)
@@ -183,6 +184,7 @@ class Decoder(nn.Module):
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         if x.dtype in (torch.long, torch.int32, torch.int64):
             x = self.embeddings(x)
+        x = x.to(self.pre_norm.weight.dtype)
         residual = x
         pre_norm = self.pre_norm(x.to(self.pre_norm.weight.dtype)).to(x.dtype)
         attention_output = self.attention(pre_norm) + residual
