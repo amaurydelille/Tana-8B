@@ -184,9 +184,9 @@ class Decoder(nn.Module):
         if x.dtype in (torch.long, torch.int32, torch.int64):
             x = self.embeddings(x)
         residual = x
-        pre_norm = self.pre_norm(x)
+        pre_norm = self.pre_norm(x.float()).to(x.dtype)
         attention_output = self.attention(pre_norm) + residual
-        norm_output = self.norm(attention_output)
+        norm_output = self.norm(attention_output.float()).to(attention_output.dtype)
         experts_output, auxiliary_loss = self.experts(norm_output)
 
         return experts_output, auxiliary_loss
