@@ -154,21 +154,29 @@ class MixtureOfExperts(nn.Module):
             return (importance * load).sum() * n_experts
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        router_logits = self.gate_proj(x)
-        top_k_logits, top_k_indices = torch.topk(router_logits, k=self.top_k, dim=-1)
-        top_k_probs = F.softmax(top_k_logits, dim=-1)
+        B, T, D = x.shape
+        x_flat = x.view(-1, D)  # [B*T, D]
 
-        output = torch.zeros_like(x)
+        router_logits = self.gate_proj(x_flat)  # [B*T, n_experts]
+        top_k_logits, top_k_indices = torch.topk(router_logits, k=self.top_k, dim=-1)  # [B*T, top_k]
+        top_k_probs = F.softmax(top_k_logits, dim=-1)  # [B*T, top_k]
+
+        output = torch.zeros_like(x_flat)
         for e in range(self.n_experts):
-            expert_mask = (top_k_indices == e)  # [B, T, top_k]
-            if not expert_mask.any():
+            # find which (token, slot) pairs route to expert e
+            expert_mask = (top_k_indices == e)  # [B*T, top_k]
+            token_indices = expert_mask.any(dim=-1).nonzero(as_tuple=True)[0]  # tokens that use expert e
+            if token_indices.numel() == 0:
                 continue
-            weight = (top_k_probs * expert_mask.float()).sum(dim=-1, keepdim=True)  # [B, T, 1]
-            output = output + weight * self.experts[e](x)
+            # gather only the selected tokens, run expert, scatter back
+            selected = x_flat[token_indices]  # [n_selected, D]
+            expert_out = self.experts[e](selected)  # [n_selected, D]
+            weight = (top_k_probs[token_indices] * expert_mask[token_indices].float()).sum(dim=-1, keepdim=True)
+            output[token_indices] = output[token_indices] + weight * expert_out
 
         auxiliary_loss = self._load_balance_loss(router_logits, top_k_indices, self.n_experts)
 
-        return output, auxiliary_loss
+        return output.view(B, T, D), auxiliary_loss
 
 class Decoder(nn.Module):
     def __init__(self, d_model: int, n_heads: int, d_hidden: int, n_experts: int, top_k: int, device: Literal["cpu", "cuda", "mps"]) -> None:
