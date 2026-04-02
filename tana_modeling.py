@@ -163,16 +163,19 @@ class MixtureOfExperts(nn.Module):
 
         output = torch.zeros_like(x_flat)
         for e in range(self.n_experts):
-            # find which (token, slot) pairs route to expert e
+            # Always call every expert — ZeRO-3 requires all ranks to trigger the
+            # same all-gather collectives. Skipping an expert on ranks where no
+            # tokens route to it causes collective desync and NCCL timeouts.
             expert_mask = (top_k_indices == e)  # [B*T, top_k]
-            token_indices = expert_mask.any(dim=-1).nonzero(as_tuple=True)[0]  # tokens that use expert e
-            if token_indices.numel() == 0:
-                continue
-            # gather only the selected tokens, run expert, scatter back
-            selected = x_flat[token_indices]  # [n_selected, D]
-            expert_out = self.experts[e](selected)  # [n_selected, D]
-            weight = (top_k_probs[token_indices] * expert_mask[token_indices].float()).sum(dim=-1, keepdim=True)
-            output[token_indices] = output[token_indices] + (weight * expert_out).to(output.dtype)
+            token_indices = expert_mask.any(dim=-1).nonzero(as_tuple=True)[0]
+            if token_indices.numel() > 0:
+                selected = x_flat[token_indices]
+            else:
+                selected = x_flat[:1]  # dummy 1-token input to trigger all-gather
+            expert_out = self.experts[e](selected)
+            if token_indices.numel() > 0:
+                weight = (top_k_probs[token_indices] * expert_mask[token_indices].float()).sum(dim=-1, keepdim=True)
+                output[token_indices] = output[token_indices] + (weight * expert_out).to(output.dtype)
 
         auxiliary_loss = self._load_balance_loss(router_logits, top_k_indices, self.n_experts)
 
