@@ -9,25 +9,33 @@ from torch.utils.data.dataloader import DataLoader
 from torch.utils.data import IterableDataset as TorchIterableDataset
 from tana_modeling import Tana, TOKENIZER
 from trainer import Trainer, TanaDataset, VOCAB_SIZE, collate_lm_batch
-import deepspeed
-import os
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
+    parser.add_argument("--no-distributed", action="store_true", help="Disable distributed training, use single GPU only")
     parser.add_argument("--local_rank", type=int, default=-1)
-    parser = deepspeed.add_config_arguments(parser)
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
+
+    distributed = not args.no_distributed
+
+    if distributed:
+        import deepspeed
+        parser = deepspeed.add_config_arguments(parser)
+        args = parser.parse_args()
+        print(json.dumps(getattr(args, "deepspeed_config", None), indent=4))
+        deepspeed.init_distributed()
+        local_rank = args.local_rank if args.local_rank >= 0 else int(os.environ.get("LOCAL_RANK", 0))
+        world_size = int(os.environ.get("WORLD_SIZE", 1))
+        rank = int(os.environ.get("RANK", 0))
+    else:
+        args = parser.parse_args()
+        local_rank = 0
+        world_size = 1
+        rank = 0
 
     print(json.dumps(args.config, indent=4))
-    print(json.dumps(getattr(args, "deepspeed_config", None), indent=4))
-
-    deepspeed.init_distributed()
-    local_rank = args.local_rank if args.local_rank >= 0 else int(os.environ.get("LOCAL_RANK", 0))
-    world_size = int(os.environ.get("WORLD_SIZE", 1))
-    rank = int(os.environ.get("RANK", 0))
-    
-    print(f"Local rank: {local_rank}, World size: {world_size}, Rank: {rank}")
+    print(f"Distributed: {distributed} | Local rank: {local_rank}, World size: {world_size}, Rank: {rank}")
 
     with open(args.config, "r") as f:
         config = json.load(f)
@@ -86,7 +94,8 @@ def main() -> None:
         args=args,
         local_rank=local_rank,
         rank=rank,
-        world_size=world_size
+        world_size=world_size,
+        distributed=distributed,
     )
 
     trainer.train()

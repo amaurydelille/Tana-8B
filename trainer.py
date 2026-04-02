@@ -94,9 +94,9 @@ class CSVLogger:
 
 class Trainer:
     def __init__(
-        self, 
-        model: Tana, 
-        train_dataloader: DataLoader, 
+        self,
+        model: Tana,
+        train_dataloader: DataLoader,
         device: str,
         hf_key: str,
         hf_model_id: str,
@@ -109,6 +109,7 @@ class Trainer:
         local_rank: int = 0,
         rank: int = 0,
         world_size: int = 1,
+        distributed: bool = True,
     ) -> None:
         self.model = model
         self.train_dataloader = train_dataloader
@@ -124,29 +125,38 @@ class Trainer:
         self.rank = rank
         self.local_rank = local_rank
         self.world_size = world_size
+        self.distributed = distributed
 
         parameters = [p for p in model.parameters() if p.requires_grad]
-        optimizer = torch.optim.AdamW(parameters, lr=learning_rate, weight_decay=weight_decay)
-        self.model_engine, self.optimizer, _, _ = deepspeed.initialize(
-            args=args,
-            model=model,
-            optimizer=optimizer,
-            model_parameters=parameters,
-        )
+        if distributed:
+            optimizer = torch.optim.AdamW(parameters, lr=learning_rate, weight_decay=weight_decay)
+            self.model_engine, self.optimizer, _, _ = deepspeed.initialize(
+                args=args,
+                model=model,
+                optimizer=optimizer,
+                model_parameters=parameters,
+            )
+        else:
+            self.model_engine = model
+            self.optimizer = torch.optim.AdamW(parameters, lr=learning_rate, weight_decay=weight_decay)
 
     def _save_and_upload_safetensors(self) -> None:
         torch.cuda.empty_cache()
-        checkpoint_dir = os.path.join(os.getcwd(), "deepspeed_ckpt_merge")
-        os.makedirs(checkpoint_dir, exist_ok=True)
-        tag = "hf_upload"
-        self.model_engine.save_checkpoint(checkpoint_dir, tag)
-        if torch.distributed.is_initialized():
-            torch.distributed.barrier()
-        if self.rank != 0:
-            return
-        from deepspeed.utils.zero_to_fp32 import get_fp32_state_dict_from_zero_checkpoint
+        if self.distributed:
+            checkpoint_dir = os.path.join(os.getcwd(), "deepspeed_ckpt_merge")
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            tag = "hf_upload"
+            self.model_engine.save_checkpoint(checkpoint_dir, tag)
+            if torch.distributed.is_initialized():
+                torch.distributed.barrier()
+            if self.rank != 0:
+                return
+            from deepspeed.utils.zero_to_fp32 import get_fp32_state_dict_from_zero_checkpoint
+            state_dict = get_fp32_state_dict_from_zero_checkpoint(checkpoint_dir, tag)
+        else:
+            checkpoint_dir = None
+            state_dict = {k: v.to(torch.float32) for k, v in self.model.state_dict().items()}
 
-        state_dict = get_fp32_state_dict_from_zero_checkpoint(checkpoint_dir, tag)
         fd, path = tempfile.mkstemp(suffix=".safetensors")
         os.close(fd)
         try:
@@ -161,7 +171,8 @@ class Trainer:
             )
         finally:
             os.unlink(path)
-            shutil.rmtree(checkpoint_dir, ignore_errors=True)
+            if checkpoint_dir is not None:
+                shutil.rmtree(checkpoint_dir, ignore_errors=True)
 
 
     def _log(self, msg: str) -> None:
@@ -184,8 +195,13 @@ class Trainer:
                 shift_logits.view(-1, shift_logits.size(-1)),
                 shift_labels.view(-1),
             ) + auxiliary_loss
-            self.model_engine.backward(loss)
-            self.model_engine.step()
+            if self.distributed:
+                self.model_engine.backward(loss)
+                self.model_engine.step()
+            else:
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
             total_loss += loss.item()
             if self.rank == 0:
                 learning_rate = self.optimizer.param_groups[0]["lr"]
