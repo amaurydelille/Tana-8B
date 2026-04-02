@@ -168,7 +168,7 @@ class Trainer:
         if self.rank == 0:
             print(msg, flush=True)
 
-    def _train_epoch(self, epoch: int, log_every: int = 10) -> float:
+    def _train_epoch(self, epoch: int, log_every: int = 1) -> float:
         self.model_engine.train()
         total_loss = 0.0
         batch_count = 0
