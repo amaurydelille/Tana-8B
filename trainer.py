@@ -174,6 +174,7 @@ class Trainer:
         batch_count = 0
         for batch_idx, (data, target) in enumerate(self.train_dataloader):
             batch_count += 1
+            self._log(f"[epoch {epoch} | step {batch_idx}] batch loaded, shape={list(data.shape)} — running forward...")
             data = data.to(self.device)
             target = target.to(self.device)
             logits, auxiliary_loss = self.model_engine(data)
