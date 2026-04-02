@@ -172,7 +172,7 @@ class MixtureOfExperts(nn.Module):
             selected = x_flat[token_indices]  # [n_selected, D]
             expert_out = self.experts[e](selected)  # [n_selected, D]
             weight = (top_k_probs[token_indices] * expert_mask[token_indices].float()).sum(dim=-1, keepdim=True)
-            output[token_indices] = output[token_indices] + weight * expert_out
+            output[token_indices] = output[token_indices] + (weight * expert_out).to(output.dtype)
 
         auxiliary_loss = self._load_balance_loss(router_logits, top_k_indices, self.n_experts)
 
