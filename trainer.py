@@ -1,17 +1,18 @@
 from tana_modeling import Tana, MAX_LEN
 import torch
-import torch.optim as optim
 from torch.utils.data.dataloader import DataLoader
 import torch.nn as nn
 from torch.utils.data import IterableDataset
 from datasets import load_dataset
-from typing import Optional, Literal
+from typing import Any, Optional
 import csv
 import os
+import shutil
 import tempfile
 from transformers import AutoTokenizer, DataCollatorForLanguageModeling
 from safetensors.torch import save_file
 from huggingface_hub import HfApi
+import deepspeed
 
 TOKENIZER_ID = "mistralai/Mistral-7B-v0.1"
 TOKENIZER = AutoTokenizer.from_pretrained(TOKENIZER_ID)
@@ -44,6 +45,8 @@ class TanaDataset(IterableDataset):
         dataset_id: str,
         dataset_config: Optional[str] = None,
         dataset_split: Optional[str] = None,
+        rank: int = 0,
+        world_size: int = 1
     ) -> None:
         if dataset_config is None:
             dataset_config = "default"
@@ -53,12 +56,16 @@ class TanaDataset(IterableDataset):
         self.dataset_id = dataset_id
         self.dataset_config = dataset_config
         self.dataset_split = dataset_split
-        self.dataset = load_dataset(
+        ds = load_dataset(
             dataset_id,
             dataset_config,
             split=dataset_split,
             streaming=True,
         )
+
+        if world_size > 1:
+            ds = ds.shard(num_shards=world_size, index=rank)
+        self.dataset = ds
 
     def __iter__(self):
         for sample in self.dataset:
@@ -90,7 +97,7 @@ class Trainer:
         self, 
         model: Tana, 
         train_dataloader: DataLoader, 
-        device: Literal["cpu", "cuda", "mps"],
+        device: str,
         hf_key: str,
         hf_model_id: str,
         learning_rate: float = 1e-4,
@@ -98,25 +105,14 @@ class Trainer:
         epochs: int = 10,
         csv_logger: Optional[CSVLogger] = None,
         csv_file: str = "metrics.csv",
+        args: Optional[Any] = None,
+        local_rank: int = 0,
+        rank: int = 0,
+        world_size: int = 1,
     ) -> None:
         self.model = model
         self.train_dataloader = train_dataloader
         self.epochs = epochs
-        muon_params = [p for p in model.parameters() if p.ndim == 2]
-        other_params = [p for p in model.parameters() if p.ndim != 2]
-        self.optimizer_muon = (
-            optim.Muon(muon_params, lr=learning_rate, weight_decay=weight_decay)
-            if muon_params
-            else None
-        )
-        self.optimizer_adam = (
-            optim.AdamW(other_params, lr=learning_rate, weight_decay=weight_decay)
-            if other_params
-            else None
-        )
-        self._optimizers = [
-            o for o in (self.optimizer_muon, self.optimizer_adam) if o is not None
-        ]
         self.criterion = nn.CrossEntropyLoss(ignore_index=-100)
         self.device = device
         self.model.to(self.device)
@@ -125,9 +121,31 @@ class Trainer:
         self.csv_file = csv_file
         self.hf_key = hf_key
         self.hf_model_id = hf_model_id
+        self.rank = rank
+        self.local_rank = local_rank
+        self.world_size = world_size
+
+        parameters = [p for p in model.parameters() if p.requires_grad]
+        optimizer = torch.optim.AdamW(parameters, lr=learning_rate, weight_decay=weight_decay)
+        self.model_engine, self.optimizer, _, _ = deepspeed.initialize(
+            args=args,
+            model=model,
+            optimizer=optimizer,
+            model_parameters=parameters,
+        )
 
     def _save_and_upload_safetensors(self) -> None:
-        state_dict = {k: v.contiguous().cpu() for k, v in self.model.state_dict().items()}
+        checkpoint_dir = os.path.join(os.getcwd(), "deepspeed_ckpt_merge")
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        tag = "hf_upload"
+        self.model_engine.save_checkpoint(checkpoint_dir, tag)
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
+        if self.rank != 0:
+            return
+        from deepspeed.utils.zero_to_fp32 import get_fp32_state_dict_from_zero_checkpoint
+
+        state_dict = get_fp32_state_dict_from_zero_checkpoint(checkpoint_dir, tag)
         fd, path = tempfile.mkstemp(suffix=".safetensors")
         os.close(fd)
         try:
@@ -142,54 +160,43 @@ class Trainer:
             )
         finally:
             os.unlink(path)
+            shutil.rmtree(checkpoint_dir, ignore_errors=True)
+
 
     def _train_epoch(self) -> float:
-        self.model.train()
+        self.model_engine.train()
         total_loss = 0.0
         batch_count = 0
-
         for batch_idx, (data, target) in enumerate(self.train_dataloader):
             batch_count += 1
-            
-            with torch.autocast(device_type=self.device, dtype=torch.float16, enabled=True):
-                data, target = data.to(self.device), target.to(self.device)
-                logits, auxiliary_loss = self.model(data)
-                shift_logits = logits[:, :-1, :].contiguous()
-                shift_labels = target[:, 1:].contiguous()
-                loss = self.criterion(
-                    shift_logits.view(-1, shift_logits.size(-1)),
-                    shift_labels.view(-1),
-                ) + auxiliary_loss
-
-            self.scaler.scale(loss).backward()
-            for opt in self._optimizers:
-                self.scaler.unscale_(opt)
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-            for opt in self._optimizers:
-                self.scaler.step(opt)
-            self.scaler.update()
-            for opt in self._optimizers:
-                opt.zero_grad(set_to_none=True)
-
+            data = data.to(self.device)
+            target = target.to(self.device)
+            logits, auxiliary_loss = self.model_engine(data)
+            shift_logits = logits[:, :-1, :].contiguous()
+            shift_labels = target[:, 1:].contiguous()
+            loss = self.criterion(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1),
+            ) + auxiliary_loss
+            self.model_engine.backward(loss)
+            self.model_engine.step()
             total_loss += loss.item()
-
-            params_flat = torch.cat([p.detach().flatten() for p in self.model.parameters()])
-            gradient_norm = torch.norm(params_flat)
-            gradient_variance = torch.var(params_flat)
-            lr_ref = self.optimizer_muon or self.optimizer_adam
-            assert lr_ref is not None
-            learning_rate = lr_ref.param_groups[0]["lr"]
-            metrics = self.csv_logger.compute_metrics(batch_idx, loss, auxiliary_loss, gradient_norm, gradient_variance, learning_rate)
-            self.csv_logger.csv_logger(metrics)
-
+            if self.rank == 0:
+                lr_ref = self.optimizer
+                learning_rate = lr_ref.param_groups[0]["lr"]
+                metrics = self.csv_logger.compute_metrics(
+                    batch_idx, loss, auxiliary_loss,
+                    torch.tensor(0.0), torch.tensor(0.0), learning_rate,
+                )
+                self.csv_logger.csv_logger(metrics)
         return total_loss / batch_count if batch_count > 0 else 0.0
 
     def train(self) -> None:
         try:
             for epoch in range(self.epochs):
                 train_loss = self._train_epoch()
-                print(f"Epoch {epoch+1}/{self.epochs}, Loss: {train_loss:.4f}")
-
+                if self.rank == 0:
+                    print(f"Epoch {epoch+1}/{self.epochs}, Loss: {train_loss:.4f}")
             self._save_and_upload_safetensors()
         except (KeyboardInterrupt, Exception):
             self._save_and_upload_safetensors()
