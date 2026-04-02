@@ -1,5 +1,5 @@
-# TANA
-
+# TANA-LLM
+![alt text](asset.png)
 
 ## Training
 Tana was trained on the following constants:
