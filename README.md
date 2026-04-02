@@ -14,7 +14,7 @@ Tana was trained on the following constants:
 
 You can train Tana on your own dataset using the following command:
 ```bash
-python main.py --epochs 10 --batch_size 8 --hf_key <your_hf_key> --hf_model_id <your_hf_model_id> --hf_dataset_id <your_hf_dataset_id> --hf_dataset_split <your_hf_dataset_split>
+python main.py --config <your_config_file.json>
 ```
 
 Tana also supports DeepSpeed for distributed training. To use DeepSpeed, you can run the following command:
