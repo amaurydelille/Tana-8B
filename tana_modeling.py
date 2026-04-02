@@ -203,7 +203,7 @@ class Tana(nn.Module):
         for decoder in self.decoders:
             x, aux = decoder(x)
             total_aux = total_aux + aux.float()
-        return self.lm_head(x), total_aux
+        return self.lm_head(x.to(self.lm_head.weight.dtype)), total_aux
 
     @torch.inference_mode()
     def generate(
