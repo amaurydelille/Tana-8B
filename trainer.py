@@ -229,7 +229,10 @@ class Trainer:
             self._log("Training complete, saving checkpoint...")
             self._save_and_upload_safetensors()
             self._log("Checkpoint saved and uploaded.")
-        except (KeyboardInterrupt, Exception):
+        except (KeyboardInterrupt, Exception) as e:
+            import traceback
+            print(f"\n[ERROR] {type(e).__name__}: {e}", flush=True)
+            traceback.print_exc()
             self._log("Interrupted — saving emergency checkpoint...")
             self._save_and_upload_safetensors()
             raise
