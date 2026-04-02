@@ -165,7 +165,11 @@ class Trainer:
             shutil.rmtree(checkpoint_dir, ignore_errors=True)
 
 
-    def _train_epoch(self) -> float:
+    def _log(self, msg: str) -> None:
+        if self.rank == 0:
+            print(msg, flush=True)
+
+    def _train_epoch(self, epoch: int, log_every: int = 10) -> float:
         self.model_engine.train()
         total_loss = 0.0
         batch_count = 0
@@ -184,22 +188,32 @@ class Trainer:
             self.model_engine.step()
             total_loss += loss.item()
             if self.rank == 0:
-                lr_ref = self.optimizer
-                learning_rate = lr_ref.param_groups[0]["lr"]
+                learning_rate = self.optimizer.param_groups[0]["lr"]
                 metrics = self.csv_logger.compute_metrics(
                     batch_idx, loss, auxiliary_loss,
                     torch.tensor(0.0), torch.tensor(0.0), learning_rate,
                 )
                 self.csv_logger.csv_logger(metrics)
+                if batch_idx % log_every == 0:
+                    avg = total_loss / batch_count
+                    self._log(
+                        f"[epoch {epoch} | step {batch_idx}] "
+                        f"loss={loss.item():.4f}  avg={avg:.4f}  "
+                        f"aux={auxiliary_loss.item():.4f}  lr={learning_rate:.2e}"
+                    )
         return total_loss / batch_count if batch_count > 0 else 0.0
 
     def train(self) -> None:
+        self._log(f"Starting training for {self.epochs} epoch(s) on rank {self.rank}")
         try:
             for epoch in range(self.epochs):
-                train_loss = self._train_epoch()
-                if self.rank == 0:
-                    print(f"Epoch {epoch+1}/{self.epochs}, Loss: {train_loss:.4f}")
+                self._log(f"--- Epoch {epoch+1}/{self.epochs} ---")
+                train_loss = self._train_epoch(epoch)
+                self._log(f"Epoch {epoch+1}/{self.epochs} done — avg loss: {train_loss:.4f}")
+            self._log("Training complete, saving checkpoint...")
             self._save_and_upload_safetensors()
+            self._log("Checkpoint saved and uploaded.")
         except (KeyboardInterrupt, Exception):
+            self._log("Interrupted — saving emergency checkpoint...")
             self._save_and_upload_safetensors()
             raise
