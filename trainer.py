@@ -13,7 +13,6 @@ from transformers import AutoTokenizer, DataCollatorForLanguageModeling
 from safetensors.torch import save_file
 from huggingface_hub import HfApi
 import deepspeed
-from deepspeed.ops.adam import DeepSpeedCPUAdam
 
 TOKENIZER_ID = "mistralai/Mistral-7B-v0.1"
 TOKENIZER = AutoTokenizer.from_pretrained(TOKENIZER_ID)
@@ -127,7 +126,7 @@ class Trainer:
         self.world_size = world_size
 
         parameters = [p for p in model.parameters() if p.requires_grad]
-        optimizer = DeepSpeedCPUAdam(parameters, lr=learning_rate, weight_decay=weight_decay, adamw_mode=True)
+        optimizer = torch.optim.AdamW(parameters, lr=learning_rate, weight_decay=weight_decay)
         self.model_engine, self.optimizer, _, _ = deepspeed.initialize(
             args=args,
             model=model,
