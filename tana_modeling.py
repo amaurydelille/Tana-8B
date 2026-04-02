@@ -158,14 +158,12 @@ class MixtureOfExperts(nn.Module):
         top_k_probs = F.softmax(top_k_logits, dim=-1)
 
         output = torch.zeros_like(x)
-        for i in range(self.top_k):
-            exprt_idx = top_k_indices[:, :, i]
-            weight = top_k_probs[:, :, i].unsqueeze(-1)
-            for e in range(self.n_experts):
-                mask = (exprt_idx == e).unsqueeze(-1)
-                if mask.any():
-                    expert_out = self.experts[e](x)
-                    output = output + mask.float() * weight * expert_out
+        for e in range(self.n_experts):
+            expert_mask = (top_k_indices == e)  # [B, T, top_k]
+            if not expert_mask.any():
+                continue
+            weight = (top_k_probs * expert_mask.float()).sum(dim=-1, keepdim=True)  # [B, T, 1]
+            output = output + weight * self.experts[e](x)
 
         auxiliary_loss = self._load_balance_loss(router_logits, top_k_indices, self.n_experts)
 
