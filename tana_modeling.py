@@ -1,4 +1,3 @@
-import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -122,13 +121,7 @@ class MultiHeadSelfAttention(nn.Module):
         q = RoPE.apply_rope(q, self.cos, self.sin)
         k = RoPE.apply_rope(k, self.cos, self.sin)
 
-        attention_scores = (q @ k.transpose(-2, -1)) / (math.sqrt(self.d_head))
-
-        if mask:
-            causal_mask = torch.tril(torch.ones(N, N, device=x.device))
-            attention_scores = attention_scores.masked_fill(causal_mask == 0, float("-inf"))
-
-        attention_values = F.softmax(attention_scores, dim=-1) @ v
+        attention_values = F.scaled_dot_product_attention(q, k, v, is_causal=mask)
         attention_values = attention_values.transpose(1, 2).contiguous().view(B, N, self.d_model)
 
         return attention_values @ self.out_proj
