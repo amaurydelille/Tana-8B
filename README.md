@@ -4,11 +4,11 @@
 ## Training
 Tana was trained on the following constants:
 - Batch size: 8
-- $d_{model} = 1024$
+- $d_{model} = 2048$
 - $n_{heads} = 16$
-- $d_{hidden} = 1024$
+- $d_{hidden} = 4096$
 - $n_{experts} = 16$
-- $top_k = 8$
+- $top_k = 4$
 - $vocab_{size} = 50000$
 - $device$ = "mps"
 
